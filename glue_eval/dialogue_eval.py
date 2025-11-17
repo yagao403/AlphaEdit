@@ -1,4 +1,4 @@
-from datasets import load_metric, load_dataset
+# from datasets import load_metric, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from sklearn.metrics import matthews_corrcoef, f1_score
 from glue_eval.useful_functions import load_data, load_data_split, MODEL_NAME_TO_MAXIMUM_CONTEXT_LENGTH_MAP
@@ -7,20 +7,20 @@ import torch
 import numpy as np
 
 MAX_NUMBER_OF_FEW_SHOTS = 100
-## IMPORTANT, few shot learning is important as it allow the answer coming out from the model to be formatted. 
+## IMPORTANT, few shot learning is important as it allow the answer coming out from the model to be formatted.
 
 class DIALOGUE_Eval():
     def __init__(self, model, tokenizer, number_of_tests = None, number_of_few_shots = 0, eval_split = 'validation'):
         assert number_of_few_shots < MAX_NUMBER_OF_FEW_SHOTS, f"The number of few shots should not exceed {number_of_few_shots}"
-        
+
         self.number_of_tests = number_of_tests
         self.number_of_few_shots = number_of_few_shots
         self.model = model
         self.tokenizer = tokenizer
-        self.few_shots, self.eval_dataset = load_data_split('glue_eval/dataset/dialogue.pkl', number_of_few_shots, number_of_tests) 
+        self.few_shots, self.eval_dataset = load_data_split('glue_eval/dataset/dialogue.pkl', number_of_few_shots, number_of_tests)
         self._initialize_prompts()
 
-    def _initialize_prompts(self): 
+    def _initialize_prompts(self):
         self.postfix_prompt = "Answer:"
         self.few_shot_context = []
         for _, few_shot in enumerate(self.few_shots):
@@ -35,7 +35,7 @@ class DIALOGUE_Eval():
             few_shot_token_length = len(self.tokenizer(few_shot)["input_ids"])
             remaining_token_length -= few_shot_token_length
             if remaining_token_length < 5:
-                break 
+                break
             actual_few_shot += few_shot
         input_prompt = actual_few_shot + question
         return input_prompt, example['options'], example['article'], self._get_label(example['answers'])
@@ -43,7 +43,7 @@ class DIALOGUE_Eval():
     # def _create_prompt(self, example):
     #     input_prompt =   self.few_shot_context + f"Q: Given the following: {example['article']}\nWhich choice is correct?\n(A){example['options'][0]}\n(B){example['options'][1]}\n(C){example['options'][2]}\n(D){example['options'][3]}\n{self.postfix_prompt}"
     #     return input_prompt, example['options'], example['article'], self._get_label(example['answers'])
-    
+
     def _get_answer(self, generated_text):
         #answer_text = generated_text.split(self.postfix_prompt)[-1].strip().strip()
         if 'a\n' in generated_text.lower():
@@ -65,7 +65,7 @@ class DIALOGUE_Eval():
             return 2
         if 'D' == suffix:
             return 3
-        
+
     def evaluate(self, gen_len = 3, print_logs = False):
         a_tok, b_tok, c_tok, d_tok = (self.tokenizer(f" {n}")["input_ids"] for n in ['A', 'B', 'C', 'D'])
 
@@ -123,7 +123,7 @@ class DIALOGUE_Eval():
 
                 with torch.no_grad():
                     logits = self.model(**prompt_tok).logits
-                
+
                 if 'llama' in self.model.config._name_or_path.lower():
                     logits = logits[:, 1:, :]
 
@@ -140,10 +140,10 @@ class DIALOGUE_Eval():
 
             #prob_a = np.exp(-probs[0])
             prob_a = np.exp(-probs[0])
-            prob_b = np.exp(-probs[1])  
-            prob_c = np.exp(-probs[2])  
-            prob_d = np.exp(-probs[3]) 
-            
+            prob_b = np.exp(-probs[1])
+            prob_c = np.exp(-probs[2])
+            prob_d = np.exp(-probs[3])
+
             def max_prob_suffix(prob_a, prob_b, prob_c, prob_d):
                 if prob_a > max(prob_b, prob_c, prob_d):
                     return 'A', 0
@@ -154,7 +154,7 @@ class DIALOGUE_Eval():
                 elif prob_d > max(prob_b, prob_c, prob_a):
                     return 'D', 3
                 return '-1', -1
-            
+
             new_answer = max_prob_suffix(prob_a, prob_b, prob_c, prob_d)
             predictions_new.append(new_answer[1])
 
@@ -181,7 +181,7 @@ class DIALOGUE_Eval():
 
             exp_temp_dict = {
                 'article': article,
-                'options': options,  
+                'options': options,
                 'input_prompt': input_prompt_text,
                 'true_answer': example['answers'],
                 'generated_text': generated_text.replace(input_prompt_text, ''),

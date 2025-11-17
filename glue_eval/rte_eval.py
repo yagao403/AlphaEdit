@@ -1,4 +1,4 @@
-from datasets import load_metric, load_dataset
+# from datasets import load_metric, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from sklearn.metrics import matthews_corrcoef, f1_score, precision_recall_fscore_support
 from glue_eval.useful_functions import load_data, load_data_split, MODEL_NAME_TO_MAXIMUM_CONTEXT_LENGTH_MAP
@@ -46,11 +46,11 @@ class RTEEval():
             few_shot_token_length = len(self.tokenizer(few_shot)["input_ids"])
             remaining_token_length -= few_shot_token_length
             if remaining_token_length < 0:
-                break 
+                break
             actual_few_shot += few_shot
         input_prompt = actual_few_shot + question
         return input_prompt
-    
+
     def _get_answer(self, generated_text):
         answer_text = generated_text.split('answer:')[-1].strip().strip()
 
@@ -64,7 +64,7 @@ class RTEEval():
 
     def evaluate(self, gen_len = 3, print_logs = False):
         true_tok, false_tok = (self.tokenizer(f" {n}")["input_ids"] for n in ['True', 'False'])
-        
+
         if 'llama' in self.model.config._name_or_path.lower():
             true_tok = true_tok[1:]
             false_tok = false_tok[1:]
@@ -104,12 +104,12 @@ class RTEEval():
             max_len = input_prompt_ids.shape[1] + gen_len
             output = self.model.generate(input_prompt_ids,max_length = max_len, do_sample = False)
             generated_text = self.tokenizer.decode(output[0], skip_special_tokens=True)
-            
+
             answer = self._get_answer(generated_text)
             predictions.append(answer)
             labels.append(label)
 
-            #### EVALUATE NEW ACC 
+            #### EVALUATE NEW ACC
             probs = [0 for _ in suffixes.keys()]
             gen_texts = [0 for _ in suffixes.keys()]
 
@@ -171,7 +171,7 @@ class RTEEval():
                 'prob_yes': prob_yes,
                 'prob_no': prob_no,
                 'highest_probability_answer': 'True' if answer_new == 1 else 'False',
-                'correct_new': answer_new == label,                
+                'correct_new': answer_new == label,
             }
             stored_generations.append(exp_temp_dict)
 
@@ -181,7 +181,7 @@ class RTEEval():
                 print(generated_text)
                 print(correct, incorrect, invalid, s+1, '|', pos_correct, neg_correct, '|', pos_incorrect, neg_incorrect, '|ACC: ', correct / (correct + incorrect + invalid), '|MCC:', mcc, '|F1:', f1)
                 print('--'*50)
-        
+
         end = time.time()
         mcc = matthews_corrcoef(labels, predictions)
         f1 = f1_score(labels, predictions, average='weighted')

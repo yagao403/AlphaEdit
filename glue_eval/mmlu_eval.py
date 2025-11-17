@@ -1,4 +1,4 @@
-from datasets import load_metric, load_dataset
+# from datasets import load_metric, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from sklearn.metrics import matthews_corrcoef, f1_score
 from glue_eval.useful_functions import load_data, load_data_split, MODEL_NAME_TO_MAXIMUM_CONTEXT_LENGTH_MAP
@@ -40,7 +40,7 @@ class MMLUEval():
             return 'C'
         if example_label == 3:
             return 'D'
-    
+
     def _create_prompt(self, example, gen_len):
         prompt = 'Question: ' + example['question'] + '\n'
         prompta = '(A) ' + example['choices'][0] + '\n'
@@ -55,11 +55,11 @@ class MMLUEval():
             few_shot_token_length = len(self.tokenizer(few_shot)["input_ids"])
             remaining_token_length -= few_shot_token_length
             if remaining_token_length < 0:
-                break 
+                break
             actual_few_shot += few_shot
         input_prompt = actual_few_shot + question
         return input_prompt, example['question'], example['answer']
-    
+
     # def _create_prompt(self, example):
     #     prompt = 'Question: ' + example['question'] + '\n'
     #     prompta = '(A) ' + example['choices'][0] + '\n'

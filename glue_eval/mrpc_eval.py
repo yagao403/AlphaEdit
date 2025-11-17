@@ -1,4 +1,4 @@
-from datasets import load_metric, load_dataset
+# from datasets import load_metric, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from sklearn.metrics import matthews_corrcoef, f1_score
 from glue_eval.useful_functions import load_data, load_data_split, MODEL_NAME_TO_MAXIMUM_CONTEXT_LENGTH_MAP
@@ -33,7 +33,7 @@ class MRPCEval():
     #     input_prompt = self.few_shot_context + self.prefix_prompt + prompt + self.postfix_prompt
 
     #     return input_prompt, example['sentence1'], example['sentence2'], example['label']
-    
+
     def _create_prompt(self, example, gen_len):
         prompt = 'Sentence 1: ' + example['sentence1'] + '\n'
         prompt += 'Sentence 2: ' + example['sentence2'] + '\n'
@@ -45,7 +45,7 @@ class MRPCEval():
             few_shot_token_length = len(self.tokenizer(few_shot)["input_ids"])
             remaining_token_length -= few_shot_token_length
             if remaining_token_length < 0:
-                break 
+                break
             actual_few_shot += few_shot
         input_prompt = actual_few_shot + question
         return input_prompt, example['sentence1'], example['sentence2'], example['label']
@@ -108,7 +108,7 @@ class MRPCEval():
             predictions.append(answer)
             labels.append(label)
 
-            #### EVALUATE NEW F1 
+            #### EVALUATE NEW F1
             probs = [0 for _ in suffixes.keys()]
             gen_texts = [0 for _ in suffixes.keys()]
 
@@ -130,7 +130,7 @@ class MRPCEval():
                     logits[0, prefix_tok_len + j - 1, :], dim=0
                     )[cur_tok].item()
                 probs[i] /= cur_len
-                
+
                 gen_texts[i] = self.tokenizer.decode(logits[0, prefix_tok_len - 1 : prefix_tok_len + cur_len - 1, :].argmax(dim = -1))
 
 
@@ -161,8 +161,8 @@ class MRPCEval():
                         neg_incorrect += 1
 
             exp_temp_dict = {
-                'sentence1': sentence1, 
-                'sentence2': sentence2, 
+                'sentence1': sentence1,
+                'sentence2': sentence2,
                 'input_prompt': input_prompt_text,
                 'true_answer': 'Yes' if label == 1 else 'No',
                 'generated_text': generated_text.replace(input_prompt_text, ''),
@@ -170,7 +170,7 @@ class MRPCEval():
                 'correct': answer == label,
                 'prob_yes': prob_yes,
                 'prob_no': prob_no,
-                'highest_probability_answer': 'Yes' if answer_new == 1 else 'No', 
+                'highest_probability_answer': 'Yes' if answer_new == 1 else 'No',
                 'correct_new': answer_new == label,
                 }
             stored_generations.append(exp_temp_dict)
@@ -211,5 +211,4 @@ if __name__ == '__main__':
 
     mrpc_eval = MRPCEval(model, tokenizer)
     mrpc_eval.evaluate(print_logs='True')
-    
-    
+

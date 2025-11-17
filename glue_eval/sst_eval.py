@@ -1,4 +1,4 @@
-from datasets import load_metric, load_dataset
+# from datasets import load_metric, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from sklearn.metrics import matthews_corrcoef, f1_score
 from glue_eval.useful_functions import load_data, load_data_split, MODEL_NAME_TO_MAXIMUM_CONTEXT_LENGTH_MAP
@@ -36,7 +36,7 @@ class SSTEval():
             few_shot_token_length = len(self.tokenizer(few_shot)["input_ids"])
             remaining_token_length -= few_shot_token_length
             if remaining_token_length < 0:
-                break 
+                break
             actual_few_shot += few_shot
         input_prompt = actual_few_shot + question
         return input_prompt, example['sentence'], example['label']
@@ -83,7 +83,7 @@ class SSTEval():
             labels.append(label)
             input_prompt_ids = self.tokenizer.encode(input_prompt, return_tensors='pt').to('cuda')
             input_prompt_text = self.tokenizer.decode(input_prompt_ids[0], skip_special_tokens=True)
-            
+
             prefix_tok_len = len(self.tokenizer(input_prompt)["input_ids"])
 
             if 'llama' in self.model.config._name_or_path.lower():
@@ -94,7 +94,7 @@ class SSTEval():
             generated_text = self.tokenizer.decode(output[0], skip_special_tokens=True)
             answer = self._get_answer(generated_text)
             predictions.append(answer)
-            
+
 
             probs = [0 for _ in suffixes.keys()]
             gen_texts = [0 for _ in suffixes.keys()]
@@ -152,7 +152,7 @@ class SSTEval():
             exp_temp_dict = {
                 'sentence': sentence,
                 'input_prompt': input_prompt_text,
-                'true_answer': 'positive' if label == 1 else 'negative',  
+                'true_answer': 'positive' if label == 1 else 'negative',
                 'generated_text': generated_text.replace(input_prompt_text, ''),
                 'answer': answer,
                 'correct': answer == label,

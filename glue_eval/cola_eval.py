@@ -1,4 +1,4 @@
-from datasets import load_metric, load_dataset
+# from datasets import load_metric, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from sklearn.metrics import matthews_corrcoef, f1_score
 from glue_eval.useful_functions import load_data, load_data_split, MODEL_NAME_TO_MAXIMUM_CONTEXT_LENGTH_MAP
@@ -28,7 +28,7 @@ class COLAEval():
         for _, few_shot in enumerate(self.few_shots):
             self.few_shot_context.append(f"{self.prefix_prompt}Sentence: {few_shot['sentence']}\nAnswer: {'No' if few_shot['label'] == 0 else 'Yes'}\n")
 
-    
+
     # def _create_prompt(self, example):
     #     prompt = 'Sentence: ' + example['sentence'] + '\n'
 
@@ -46,7 +46,7 @@ class COLAEval():
             few_shot_token_length = len(self.tokenizer(few_shot)["input_ids"])
             remaining_token_length -= few_shot_token_length
             if remaining_token_length < 0:
-                break 
+                break
             actual_few_shot += few_shot
         input_prompt = actual_few_shot + question
         print(type(example['label']))
@@ -90,9 +90,9 @@ class COLAEval():
         predictions_new = []
         stored_generations = []
         start = time.time()
-        
+
         for s, example in enumerate(self.eval_dataset):
-            
+
             input_prompt, sentence, label = self._create_prompt(example, gen_len)
             print(input_prompt)
             input_prompt_ids = self.tokenizer.encode(input_prompt, return_tensors='pt').to('cuda')
@@ -110,7 +110,7 @@ class COLAEval():
 
             predictions.append(answer)
             labels.append(label)
-        
+
             probs = [0 for _ in suffixes.keys()]
             gen_texts = [0 for _ in suffixes.keys()]
 
@@ -131,7 +131,7 @@ class COLAEval():
                     logits[0, prefix_tok_len + j - 1, :], dim=0
                     )[cur_tok].item()
                 probs[i] /= cur_len
-                
+
                 gen_texts[i] = self.tokenizer.decode(logits[0, prefix_tok_len - 1 : prefix_tok_len + cur_len - 1, :].argmax(dim = -1))
 
             prob_yes = np.exp(-probs[0])

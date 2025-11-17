@@ -1,4 +1,4 @@
-from datasets import load_metric, load_dataset
+# from datasets import load_metric, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from sklearn.metrics import matthews_corrcoef, f1_score
 from glue_eval.useful_functions import load_data, load_data_split, MODEL_NAME_TO_MAXIMUM_CONTEXT_LENGTH_MAP
@@ -7,7 +7,7 @@ import torch
 import numpy as np
 
 MAX_NUMBER_OF_FEW_SHOTS = 100
-## IMPORTANT, few shot learning is important as it allow the answer coming out from the model to be formatted. 
+## IMPORTANT, few shot learning is important as it allow the answer coming out from the model to be formatted.
 
 class NLIEval():
     def __init__(self, model, tokenizer, number_of_tests = None, number_of_few_shots = 0, eval_split = 'validation'):
@@ -16,20 +16,20 @@ class NLIEval():
         self.number_of_few_shots = number_of_few_shots
         self.model = model
         self.tokenizer = tokenizer
-        self.few_shots, self.eval_dataset = load_data_split('glue_eval/dataset/nli.pkl', number_of_few_shots, number_of_tests) 
+        self.few_shots, self.eval_dataset = load_data_split('glue_eval/dataset/nli.pkl', number_of_few_shots, number_of_tests)
         self._initialize_prompts()
-        
+
     # def _initialize_prompts(self):
-    #     self.postfix_prompt = 'True or False? answer:' 
+    #     self.postfix_prompt = 'True or False? answer:'
     #     self.few_shot_context = ""
     #     for _, few_shot in enumerate(self.few_shots):
-    #         self.few_shot_context += f'{few_shot["sentence1"]} entails the {few_shot["sentence2"]} {self.postfix_prompt} {("True" if few_shot["label"] == "entailment" else "False")}\n' 
+    #         self.few_shot_context += f'{few_shot["sentence1"]} entails the {few_shot["sentence2"]} {self.postfix_prompt} {("True" if few_shot["label"] == "entailment" else "False")}\n'
 
     def _initialize_prompts(self):
-        self.postfix_prompt = 'True or False? Answer:' 
+        self.postfix_prompt = 'True or False? Answer:'
         self.few_shot_context = []
         for _, few_shot in enumerate(self.few_shots):
-            self.few_shot_context.append(f'{few_shot["sentence1"]} entails the {few_shot["sentence2"]} {self.postfix_prompt} {("True" if few_shot["label"] == "entailment" else "False")}\n')  
+            self.few_shot_context.append(f'{few_shot["sentence1"]} entails the {few_shot["sentence2"]} {self.postfix_prompt} {("True" if few_shot["label"] == "entailment" else "False")}\n')
 
     def _create_prompt(self, example, gen_len):
         question = f'{example["sentence1"]} entails the {example["sentence2"]} {self.postfix_prompt}'
@@ -40,11 +40,11 @@ class NLIEval():
             few_shot_token_length = len(self.tokenizer(few_shot)["input_ids"])
             remaining_token_length -= few_shot_token_length
             if remaining_token_length < 0:
-                break 
+                break
             actual_few_shot += few_shot
         input_prompt = actual_few_shot + question
         return input_prompt, example['sentence1'], example['sentence2'], self._get_label(example['label'])
-    
+
     def _get_answer(self, generated_text):
         answer_text = generated_text.split(self.postfix_prompt)[-1].strip().strip()
 
@@ -102,8 +102,8 @@ class NLIEval():
             predictions.append(answer)
             labels.append(label)
 
-            #### EVALUATE NEW ACC 
-            
+            #### EVALUATE NEW ACC
+
             probs = [0 for _ in suffixes.keys()]
             gen_texts = [0 for _ in suffixes.keys()]
 
@@ -159,13 +159,13 @@ class NLIEval():
                 'sentence1': sentence1,
                 'sentence2': sentence2,
                 'input_prompt': input_prompt_text,
-                'true_answer': 'True' if label == 1 else 'False', 
+                'true_answer': 'True' if label == 1 else 'False',
                 'generated_text': generated_text.replace(input_prompt_text, ''),
                 'answer': answer,
                 'correct': answer == label,
                 'prob_true': prob_true,
                 'prob_false': prob_false,
-                'highest_probability_answer': 'True' if answer_new == 1 else 'False', 
+                'highest_probability_answer': 'True' if answer_new == 1 else 'False',
                 'correct_new': answer_new == label,
             }
             stored_generations.append(exp_temp_dict)
