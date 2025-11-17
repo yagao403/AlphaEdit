@@ -5,7 +5,7 @@ def save_data(filename, data):
     a_file = open(filename, "wb")
     pickle.dump(data, a_file)
     a_file.close()
-    
+
 
 def load_data(filename):
     a_file = open(filename, "rb")
@@ -37,6 +37,7 @@ MODEL_NAME_TO_MAXIMUM_CONTEXT_LENGTH_MAP = {
     "gpt2-xl": 1024,
     "llama-2-7b-hf": 4096,
     "llama3-8b-instruct": 4096,
+    "meta-llama-3-8b-instruct": 4096,  # Add this line
     "eleutherai_gpt-j-6b": 2048,
     "gpt2-large": 1024,
     "gpt2-medium": 1024
