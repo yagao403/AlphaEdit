@@ -1,5 +1,6 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+from pathlib import Path
+# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import json
 import shutil
 from itertools import islice
@@ -203,10 +204,22 @@ def main(
             if alg_name == "AlphaEdit":
                 P = torch.zeros((len(hparams.layers), W_out.shape[1], W_out.shape[1]), device="cpu")
         del W_out
+    # if alg_name == "AlphaEdit":
+    #     for i, layer in enumerate(hparams.layers):
+    #         P[i,:,:] = get_project(model,tok,layer,hparams)
+    #     torch.save(P, "null_space_project.pt")
     if alg_name == "AlphaEdit":
-        for i, layer in enumerate(hparams.layers):
-            P[i,:,:] = get_project(model,tok,layer,hparams)
-        torch.save(P, "null_space_project.pt")
+        projection_file = Path("/scratch/project_462000812/yagao/baselines/AlphaEdit/null_space_project.pt")
+        if projection_file.exists():
+            print(f"Loading pre-computed projection matrix from {projection_file}")
+            P = torch.load(projection_file)
+            print("Projection matrix loaded successfully!")
+        else:
+            print("Computing null space projection matrix (this may take a while)...")
+            for i, layer in enumerate(hparams.layers):
+                P[i,:,:] = get_project(model,tok,layer,hparams)
+            torch.save(P, "null_space_project.pt")
+            print(f"Projection matrix saved to {projection_file}")
     # hs = get_module_input_output_at_words(
     #         model,
     #         tok,
@@ -234,7 +247,7 @@ def main(
                 break
         if already_finished:
             continue
-        
+
         # Compute weight changes + record weights that changed
         case_ids = [record["case_id"] for record in record_chunks]
         args_conserve_memory = (
@@ -245,11 +258,12 @@ def main(
         etc_args = dict(cache_template=cache_template) if any(alg in alg_name for alg in ["ROME", "MEMIT","AlphaEdit", "MEMIT_seq", "MEMIT_prune", "NSE"]) else dict()
         seq_args = dict(cache_c=cache_c) if any(alg in alg_name for alg in ["AlphaEdit", "MEMIT_seq", "NSE"]) else dict()
         nc_args = dict(P = P) if any(alg in alg_name for alg in ["AlphaEdit"]) else dict()
-        if cnt == 0 and args.downstream_eval_steps > 0:#do initial GLUE EVAL WITH ORIGINAL MODEL
+        # if cnt == 0 and args.downstream_eval_steps > 0:#do initial GLUE EVAL WITH ORIGINAL MODEL
+        if cnt == 0 and args.downstream_eval_steps > 0 and False: #do initial GLUE EVAL WITH ORIGINAL MODEL; set to False to disable
             glue_results = {'edit_num': -1}
 
             out_file = glue_save_location + "base.json"
-            
+
             glue_eval = GLUEEval(model, tok, number_of_tests = 100)
             glue_results = glue_eval.evaluate(glue_results, out_file, nli_flag = True, sst_flag = True, cola_flag=True, rte_flag=True, mmlu_flag = True, mrpc_flag = True)
 
@@ -363,7 +377,7 @@ def main(
         cnt+=1
         print("Execution took", exec_time)
         # Evaluate new model
-    
+
         if args.downstream_eval_steps > 0 and cnt % args.downstream_eval_steps == 0:
             glue_results = {
                         'edit_num': cnt*num_edits,
@@ -374,7 +388,7 @@ def main(
 
             glue_eval = GLUEEval(model, tok, number_of_tests = 100)
             glue_results = glue_eval.evaluate(glue_results, out_file, nli_flag = True, sst_flag = True, cola_flag=True, rte_flag=True, mmlu_flag = True, mrpc_flag = True)
-                    
+
             #store the individual overall result file
             output_filename = out_file.replace('.json', '_glue.json')
             with open(output_filename, "w") as f:
