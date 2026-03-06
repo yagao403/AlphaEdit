@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=alphaedit_zsre
-#SBATCH --account=project_462000812
+#SBATCH --job-name=alphaedit_zsre_2000_100
+#SBATCH --account=project_462000919
 #SBATCH --time=3:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -33,6 +33,6 @@ python3 -m experiments.evaluate \
     --ds_name=zsre \
     --dataset_size_limit=2000 \
     --num_edits=100 \
-    --downstream_eval_steps=10
+    --downstream_eval_steps=5
 
 echo "Job completed at $(date)"
