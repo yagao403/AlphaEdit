@@ -40,19 +40,14 @@ def main():
     aa(
         "--model_name",
         default="gpt2-xl",
-        choices=[
-            "gpt2-xl",
-            "EleutherAI/gpt-j-6B",
-            "EleutherAI/gpt-neox-20b",
-            "gpt2-large",
-            "gpt2-medium",
-            "gpt2",
-        ],
     )
     aa("--fact_file", default=None)
     aa("--output_dir", default="results/{model_name}/causal_trace")
     aa("--noise_level", default="s3", type=parse_noise_rule)
     aa("--replace", default=0, type=int)
+    aa("--device_map", default=None, type=str,
+       help="Set to 'auto' for multi-GPU model parallelism (required for large models)")
+    aa("--torch_dtype", default="float16", type=str, choices=["float16", "bfloat16", "float32"])
     args = parser.parse_args()
 
     modeldir = f'r{args.replace}_{args.model_name.replace("/", "_")}'
@@ -63,13 +58,15 @@ def main():
     os.makedirs(result_dir, exist_ok=True)
     os.makedirs(pdf_dir, exist_ok=True)
 
-    # Half precision to let the 20b model fit.
-    torch_dtype = torch.float16 if "20b" in args.model_name else None
+    torch_dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[args.torch_dtype]
 
-    mt = ModelAndTokenizer(args.model_name, torch_dtype=torch_dtype)
+    mt = ModelAndTokenizer(args.model_name, torch_dtype=torch_dtype, device_map=args.device_map)
 
     if args.fact_file is None:
         knowns = KnownsDataset(DATA_DIR)
+    elif args.fact_file == "small_knowns":
+        knowns = KnownsDataset(DATA_DIR)
+        knowns = knowns[:10]
     else:
         with open(args.fact_file) as f:
             knowns = json.load(f)
@@ -98,7 +95,8 @@ def main():
 
     for knowledge in tqdm(knowns):
         known_id = knowledge["known_id"]
-        for kind in None, "mlp", "attn":
+        # for kind in None, "mlp", "attn":
+        for kind in "mlp":
             kind_suffix = f"_{kind}" if kind else ""
             filename = f"{result_dir}/knowledge_{known_id}{kind_suffix}.npz"
             if not os.path.isfile(filename):
@@ -311,8 +309,8 @@ def calculate_hidden_flow(
     Runs causal tracing over every token/layer combination in the network
     and returns a dictionary numerically summarizing the results.
     """
-    # TODO fix the noise thing. base on the model.
-    inp = make_inputs(mt.tokenizer, [prompt] * (samples + 1))
+    device = next(mt.model.parameters()).device
+    inp = make_inputs(mt.tokenizer, [prompt] * (samples + 1), device=device)
     with torch.no_grad():
         answer_t, base_score = [d[0] for d in predict_from_input(mt.model, inp)]
     [answer] = decode_tokens(mt.tokenizer, [answer_t])
@@ -457,23 +455,33 @@ class ModelAndTokenizer:
         tokenizer=None,
         low_cpu_mem_usage=False,
         torch_dtype=None,
+        device_map=None,
     ):
         if tokenizer is None:
             assert model_name is not None
             tokenizer = AutoTokenizer.from_pretrained(model_name)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
         if model is None:
             assert model_name is not None
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name, low_cpu_mem_usage=low_cpu_mem_usage, torch_dtype=torch_dtype
+            load_kwargs = dict(
+                low_cpu_mem_usage=low_cpu_mem_usage,
+                torch_dtype=torch_dtype,
             )
+            if device_map is not None:
+                load_kwargs["device_map"] = device_map
+            model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
             nethook.set_requires_grad(False, model)
-            model.eval().cuda()
+            if device_map is None:
+                model.eval().cuda()
+            else:
+                model.eval()
         self.tokenizer = tokenizer
         self.model = model
         self.layer_names = [
             n
             for n, m in model.named_modules()
-            if (re.match(r"^(transformer|gpt_neox)\.(h|layers)\.\d+$", n))
+            if (re.match(r"^(transformer|gpt_neox|model)\.(h|layers)\.\d+$", n))
         ]
         self.num_layers = len(self.layer_names)
 
@@ -496,6 +504,12 @@ def layername(model, num, kind=None):
         if kind == "attn":
             kind = "attention"
         return f'gpt_neox.layers.{num}{"" if kind is None else "." + kind}'
+    if hasattr(model, "model"):
+        if kind == "embed":
+            return "model.embed_tokens"
+        if kind == "attn":
+            kind = "self_attn"
+        return f'model.layers.{num}{"" if kind is None else "." + kind}'
     assert False, "unknown transformer structure"
 
 
@@ -590,7 +604,9 @@ def plot_all_flow(mt, prompt, subject=None):
 
 
 # Utilities for dealing with tokens
-def make_inputs(tokenizer, prompts, device="cuda"):
+def make_inputs(tokenizer, prompts, device=None):
+    if device is None:
+        device = "cuda"
     token_lists = [tokenizer.encode(p) for p in prompts]
     maxlen = max(len(t) for t in token_lists)
     if "[PAD]" in tokenizer.all_special_tokens:
@@ -630,7 +646,8 @@ def find_token_range(tokenizer, token_array, substring):
 
 
 def predict_token(mt, prompts, return_p=False):
-    inp = make_inputs(mt.tokenizer, prompts)
+    device = next(mt.model.parameters()).device
+    inp = make_inputs(mt.tokenizer, prompts, device=device)
     preds, p = predict_from_input(mt.model, inp)
     result = [mt.tokenizer.decode(c) for c in preds]
     if return_p:
@@ -646,9 +663,10 @@ def predict_from_input(model, inp):
 
 
 def collect_embedding_std(mt, subjects):
+    device = next(mt.model.parameters()).device
     alldata = []
     for s in subjects:
-        inp = make_inputs(mt.tokenizer, [s])
+        inp = make_inputs(mt.tokenizer, [s], device=device)
         with nethook.Trace(mt.model, layername(mt.model, 0, "embed")) as t:
             mt.model(**inp)
             alldata.append(t.output[0])
@@ -667,10 +685,12 @@ def get_embedding_cov(mt):
             ds_name,
             dict(wikitext="wikitext-103-raw-v1", wikipedia="20200501.en")[ds_name],
         )
-        try:
+        if hasattr(model.config, 'n_positions'):
             maxlen = model.config.n_positions
-        except:
-            maxlen = 100  # Hack due to missing setting in GPT2-NeoX.
+        elif hasattr(model.config, 'max_position_embeddings'):
+            maxlen = min(model.config.max_position_embeddings, 4096)
+        else:
+            maxlen = 100
         return TokenizedDataset(raw_ds["train"], tokenizer, maxlen=maxlen)
 
     ds = get_ds()
@@ -693,14 +713,18 @@ def get_embedding_cov(mt):
         random_sample=1,
         num_workers=0,
     )
+    input_device = next(model.parameters()).device
     with torch.no_grad():
         for batch_group in loader:
             for batch in batch_group:
-                batch = dict_to_(batch, "cuda")
+                batch = dict_to_(batch, input_device)
                 del batch["position_ids"]
                 with nethook.Trace(model, layername(mt.model, 0, "embed")) as tr:
                     model(**batch)
-                feats = flatten_masked_batch(tr.output, batch["attention_mask"])
+                tr_output = tr.output[0] if isinstance(tr.output, tuple) else tr.output
+                feats = flatten_masked_batch(
+                    tr_output, batch["attention_mask"].to(tr_output.device)
+                )
                 stat.add(feats.cpu().double())
     return stat.mean(), stat.covariance()
 
