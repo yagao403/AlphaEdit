@@ -96,7 +96,7 @@ def main():
     for knowledge in tqdm(knowns):
         known_id = knowledge["known_id"]
         # for kind in None, "mlp", "attn":
-        for kind in "mlp":
+        for kind in ["mlp"]:
             kind_suffix = f"_{kind}" if kind else ""
             filename = f"{result_dir}/knowledge_{known_id}{kind_suffix}.npz"
             if not os.path.isfile(filename):
