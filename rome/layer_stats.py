@@ -118,7 +118,7 @@ def layer_stats(
                 maxlen = model.config.sliding_window or 4096
             else:
                 maxlen = 4096
-        if hasattr(model.config, 'model_type') and 'qwen2' in model.config.model_type:
+        if hasattr(model.config, 'model_type') and ('qwen2' in model.config.model_type or 'qwen3' in model.config.model_type):
             maxlen = 4096
 
         if batch_tokens is not None and batch_tokens < maxlen:
@@ -143,7 +143,7 @@ def layer_stats(
             npos = model.config.sliding_window or 4096
         else:
             npos = 4096
-    if hasattr(model.config, 'model_type') and 'qwen2' in model.config.model_type:
+    if hasattr(model.config, 'model_type') and ('qwen2' in model.config.model_type or 'qwen3' in model.config.model_type):
             npos = 4096
 
     if batch_tokens is None:
@@ -164,7 +164,7 @@ def layer_stats(
 
     print(f"Computing Cov locally....")
 
-    ds = get_ds() if not filename.exists() else None
+    ds = get_ds() if (not filename.exists() or force_recompute) else None
     if progress is None:
         progress = lambda x: x
 
@@ -180,17 +180,22 @@ def layer_stats(
         random_sample=1,
         num_workers=2,
     )
-    batch_count = -(-(sample_size or len(ds)) // batch_size)
+    input_device = next(model.parameters()).device
+    batch_count = -(-(sample_size or (len(ds) if ds is not None else 0)) // batch_size)
     with torch.no_grad():
         for batch_group in progress(loader, total=batch_count):
             for batch in batch_group:
-                batch = dict_to_(batch, "cuda")
+                batch = dict_to_(batch, input_device)
                 with Trace(
                     model, layer_name, retain_input=True, retain_output=False, stop=True
                 ) as tr:
                     model(**batch)
-                feats = flatten_masked_batch(tr.input, batch["attention_mask"])
-                # feats = flatten_masked_batch(tr.output, batch["attention_mask"])
+                tr_input = tr.input
+                if isinstance(tr_input, tuple):
+                    tr_input = tr_input[0]
+                feats = flatten_masked_batch(
+                    tr_input, batch["attention_mask"].to(tr_input.device)
+                )
                 feats = feats.to(dtype=dtype)
                 stat.add(feats)
     return stat
