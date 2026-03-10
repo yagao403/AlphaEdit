@@ -100,7 +100,8 @@ def layer_stats(
         # raw_ds = {'train': raw_ds}
         raw_ds = load_dataset(
             ds_name,
-            dict(wikitext="wikitext-103-raw-v1", wikipedia="20200501.en")[ds_name]
+            dict(wikitext="wikitext-103-raw-v1", wikipedia="20220301.en")[ds_name],
+            trust_remote_code=True,
         )
         if hasattr(model.config, 'n_positions'):
             maxlen = model.config.n_positions
@@ -112,7 +113,7 @@ def layer_stats(
             maxlen = model.config.seq_length
         else:
             raise NotImplementedError
-                
+
         if hasattr(model.config, 'model_type') and 'mistral' in model.config.model_type:
             if hasattr(model.config, 'sliding_window') and model.config.sliding_window:
                 maxlen = model.config.sliding_window or 4096
@@ -126,7 +127,7 @@ def layer_stats(
         return TokenizedDataset(raw_ds["train"], tokenizer, maxlen=maxlen)
 
     # Continue with computation of statistics
-    batch_size = 1  # Examine this many dataset texts at once
+    batch_size = 10  # Examine this many dataset texts at once
     if hasattr(model.config, 'n_positions'):
         npos = model.config.n_positions
     elif hasattr(model.config, 'max_sequence_length'):
@@ -137,7 +138,7 @@ def layer_stats(
         npos = model.config.seq_length
     else:
         raise NotImplementedError
-        
+
     if hasattr(model.config, 'model_type') and 'mistral' in model.config.model_type:
         if hasattr(model.config, 'sliding_window') and model.config.sliding_window:
             npos = model.config.sliding_window or 4096
