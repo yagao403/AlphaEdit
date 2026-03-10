@@ -49,29 +49,50 @@ def compute_covariance(model, tok, layer_name, hparams, force_recompute=False):
         precision=hparams.mom2_dtype,
         force_recompute=force_recompute,
     )
-    cov = stat.mom2.moment().float().cpu()
+    cov = stat.mom2.moment().float()
     print(f"  Covariance shape: {cov.shape}")
     return cov
 
 
-def compute_projection(cov, threshold):
+def compute_projection(cov, threshold, gpu_device="cuda:0"):
     """
     Compute the null-space projection matrix P from the covariance.
 
     Steps (from AlphaEdit paper, Section 3.2):
-      1. SVD of the covariance K0 K0^T
-      2. Keep eigenvectors whose singular values are below the threshold
+      1. Eigendecomposition of the symmetric PSD covariance K0 K0^T
+      2. Keep eigenvectors whose eigenvalues are below the threshold
       3. P = U_small @ U_small^T
     """
-    print(f"  Running SVD on covariance ({cov.shape[0]}x{cov.shape[1]})...")
-    U, S, _ = torch.linalg.svd(cov, full_matrices=False)
+    n = cov.shape[0]
 
-    small_singular_indices = (S < threshold).nonzero(as_tuple=True)[0]
-    print(f"  Singular values below threshold ({threshold}): "
-          f"{len(small_singular_indices)} / {len(S)}")
+    # Try GPU with magma backend first, fall back to CPU
+    for attempt_device in [gpu_device, "cpu"]:
+        try:
+            if attempt_device != "cpu":
+                torch.backends.cuda.preferred_linalg_library("magma")
+            print(f"  Running eigendecomposition on ({n}x{n}) on {attempt_device}...")
+            cov_dev = cov.to(attempt_device)
+            eigenvalues, eigenvectors = torch.linalg.eigh(cov_dev)
+            break
+        except RuntimeError as e:
+            print(f"  Failed on {attempt_device}: {e}")
+            if attempt_device == "cpu":
+                raise
+            print(f"  Falling back to CPU...")
+            torch.cuda.empty_cache()
+            continue
 
-    U_small = U[:, small_singular_indices]
-    P = U_small @ U_small.T
+    small_indices = (eigenvalues < threshold).nonzero(as_tuple=True)[0]
+    print(f"  Eigenvalues below threshold ({threshold}): "
+          f"{len(small_indices)} / {len(eigenvalues)}")
+
+    U_small = eigenvectors[:, small_indices]
+    if U_small.device.type == "cuda":
+        P = (U_small @ U_small.T).cpu()
+        del cov_dev, eigenvalues, eigenvectors, U_small
+        torch.cuda.empty_cache()
+    else:
+        P = U_small @ U_small.T
     print(f"  Projection matrix shape: {P.shape}")
     return P
 
