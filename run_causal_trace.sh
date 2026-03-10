@@ -16,7 +16,7 @@ mkdir -p logs
 module use /appl/local/csc/modulefiles/
 module load pytorch/2.7
 
-cd /scratch/project_462000812/yagao/baselines/AlphaEdit
+cd /scratch/project_462000919/yagao/code_repo/AlphaEdit/AlphaEdit
 source .venv/bin/activate
 
 export HF_HOME=/scratch/project_462000812/hf-cache
@@ -27,7 +27,6 @@ echo "GPUs visible: $(python -c 'import torch; print(torch.cuda.device_count())'
 
 python -m experiments.causal_trace \
     --model_name Qwen/Qwen3-32B \
-    --fact_file small_knowns \
     --device_map auto \
     --noise_level s3 \
     --torch_dtype bfloat16

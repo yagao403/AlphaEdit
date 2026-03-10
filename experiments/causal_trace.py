@@ -111,7 +111,7 @@ def main():
                     replace=args.replace,
                 )
                 numpy_result = {
-                    k: v.detach().cpu().numpy() if torch.is_tensor(v) else v
+                    k: v.detach().cpu().float().numpy() if torch.is_tensor(v) else v
                     for k, v in result.items()
                 }
                 numpy.savez(filename, **numpy_result)
