@@ -162,6 +162,10 @@ def layer_stats(
     stats_dir = Path(stats_dir)
     file_extension = f"{model_name}/{ds_name}_stats/{layer_name}_{precision}_{'-'.join(sorted(to_collect))}{size_suffix}.npz"
     filename = stats_dir / file_extension
+    if filename.exists():
+        print(f"Loading cached stats from {filename}")
+    else:
+        print(f"Computing stats from scratch for {filename}")
 
     print(f"Computing Cov locally....")
 

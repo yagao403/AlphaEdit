@@ -21,7 +21,14 @@ def compute_z(
     """
     Computes the value (right) vector for the rank-1 update.
     Runs a simple optimization procedure.
+    Supports multi-GPU models loaded with device_map="auto".
     """
+
+    # Determine devices: model inputs go to the embedding device,
+    # delta lives on the target layer's device for hook compatibility.
+    input_device = next(model.parameters()).device
+    layer_module = nethook.get_module(model, hparams.layer_module_tmp.format(layer))
+    layer_device = next(layer_module.parameters()).device
 
     # Get model parameters
     lm_w, ln_f = (
@@ -36,12 +43,11 @@ def compute_z(
     print("Computing right vector (v)")
 
     # Tokenize target into list of int token IDs
-    target_ids = tok(request["target_new"]["str"], return_tensors="pt").to("cuda")[
-        "input_ids"
-    ][0]
+    target_ids = tok(request["target_new"]["str"], return_tensors="pt")["input_ids"][0]
 
     if target_ids[0] == tok.bos_token_id or target_ids[0] == tok.unk_token_id:
         target_ids = target_ids[1:]
+
     # Compile list of rewriting and KL x/y pairs
     rewriting_prompts, kl_prompts = [
         context.format(request["prompt"]) + tok.decode(target_ids[:-1])
@@ -54,12 +60,13 @@ def compute_z(
         [prompt.format(request["subject"]) for prompt in all_prompts],
         return_tensors="pt",
         padding=True,
-    ).to("cuda")
+    ).to(input_device)
 
     # Compute rewriting targets
-    rewriting_targets = torch.tensor(-100, device="cuda").repeat(
+    rewriting_targets = torch.tensor(-100, device=input_device).repeat(
         len(rewriting_prompts), *input_tok["input_ids"].shape[1:]
     )
+    target_ids = target_ids.to(input_device)
     for i in range(len(rewriting_prompts)):
         ex_len = input_tok["attention_mask"][i].sum()
         rewriting_targets[i, ex_len - len(target_ids) : ex_len] = target_ids
@@ -78,46 +85,40 @@ def compute_z(
     print(f"Tying optimization objective to {loss_layer}")
 
     # Set up an optimization over a latent vector that, when output at the
-    # rewrite layer, i.e. hypothesized fact lookup location, will induce the
-    # target token to be predicted at the final layer.
+    # rewrite layer, will induce the target token to be predicted at the final
+    # layer.  delta must live on the same device as the layer output so the
+    # edit_output_fn hook can add it without cross-device errors.
     if hasattr(model.config, 'n_embd'):
-        delta = torch.zeros((model.config.n_embd,), requires_grad=True, device="cuda")
+        hidden_dim = model.config.n_embd
     elif hasattr(model.config, 'hidden_size'):
-        delta = torch.zeros((model.config.hidden_size,), requires_grad=True, device="cuda")
+        hidden_dim = model.config.hidden_size
     else:
         raise NotImplementedError
+    delta = torch.zeros((hidden_dim,), requires_grad=True, device=layer_device)
     target_init, kl_distr_init = None, None
 
-    # Inserts new "delta" variable at the appropriate part of the computation
     def edit_output_fn(cur_out, cur_layer):
         nonlocal target_init
 
         if cur_layer == hparams.layer_module_tmp.format(layer):
-            # Store initial value of the vector of interest
             if target_init is None:
                 print("Recording initial value of v*")
-                # Initial value is recorded for the clean sentence
                 target_init = cur_out[0][0, lookup_idxs[0]].detach().clone()
 
-            # Add intervened delta
             for i, idx in enumerate(lookup_idxs):
-
-                if len(lookup_idxs)!=len(cur_out[0]):
+                if len(lookup_idxs) != len(cur_out[0]):
                     cur_out[0][idx, i, :] += delta
                 else:
                     cur_out[0][i, idx, :] += delta
 
         return cur_out
 
-    # Optimizer
     opt = torch.optim.Adam([delta], lr=hparams.v_lr)
     nethook.set_requires_grad(False, model)
 
-    # Execute optimization
     for it in range(hparams.v_num_grad_steps):
         opt.zero_grad()
 
-        # Forward propagation
         with nethook.TraceDict(
             module=model,
             layers=[
@@ -130,7 +131,6 @@ def compute_z(
         ) as tr:
             logits = model(**input_tok).logits
 
-            # Compute distribution for KL divergence
             kl_logits = torch.stack(
                 [
                     logits[i - len(kl_prompts), idx, :]
@@ -142,21 +142,25 @@ def compute_z(
             if kl_distr_init is None:
                 kl_distr_init = kl_log_probs.detach().clone()
 
-        # Compute loss on rewriting targets
-        output=tr[hparams.layer_module_tmp.format(loss_layer)].output[0]
-        if output.shape[1]!=rewriting_targets.shape[1]:
-            output=torch.transpose(output, 0, 1)
+        output = tr[hparams.layer_module_tmp.format(loss_layer)].output[0]
+        if output.shape[1] != rewriting_targets.shape[1]:
+            output = torch.transpose(output, 0, 1)
         full_repr = output[:len(rewriting_prompts)]
 
-        log_probs = torch.log_softmax(ln_f(full_repr) @ lm_w.to(full_repr.device) + lm_b.to(full_repr.device), dim=2)
+        # lm_w and lm_b may be on a different device (lm_head device)
+        log_probs = torch.log_softmax(
+            ln_f(full_repr) @ lm_w.to(full_repr.device) + lm_b.to(full_repr.device),
+            dim=2,
+        )
         loss = torch.gather(
             log_probs,
             2,
-            torch.where(rewriting_targets != -100, rewriting_targets, 0).unsqueeze(2).to(log_probs.device),
+            torch.where(rewriting_targets != -100, rewriting_targets, 0)
+            .unsqueeze(2)
+            .to(log_probs.device),
         ).squeeze(2)
         mask = (rewriting_targets != -100).float()
 
-        # Aggregate total losses
         nll_loss_each = -(loss * mask.to(loss.device)).sum(1) / target_ids.size(0)
         nll_loss = nll_loss_each.mean()
         kl_loss = hparams.kl_factor * torch.nn.functional.kl_div(
@@ -165,7 +169,6 @@ def compute_z(
         weight_decay = hparams.v_weight_decay * (
             torch.norm(delta) / torch.norm(target_init) ** 2
         )
-        # weight_decay = hparams.v_weight_decay * torch.norm(delta) ** 2
         loss = nll_loss + kl_loss.to(nll_loss.device) + weight_decay.to(nll_loss.device)
         print(
             f"loss {np.round(loss.item(), 3)} = {np.round(nll_loss.item(), 3)} + {np.round(kl_loss.item(), 3)} + {np.round(weight_decay.item(), 3)} "
@@ -178,11 +181,9 @@ def compute_z(
         if it == hparams.v_num_grad_steps - 1:
             break
 
-        # Backpropagate
         loss.backward()
         opt.step()
 
-        # Project within L2 ball
         max_norm = hparams.clamp_norm_factor * target_init.norm()
         if delta.norm() > max_norm:
             with torch.no_grad():

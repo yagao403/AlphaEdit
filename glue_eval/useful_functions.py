@@ -40,5 +40,6 @@ MODEL_NAME_TO_MAXIMUM_CONTEXT_LENGTH_MAP = {
     "meta-llama-3-8b-instruct": 4096,  # Add this line
     "eleutherai_gpt-j-6b": 2048,
     "gpt2-large": 1024,
-    "gpt2-medium": 1024
+    "gpt2-medium": 1024,
+    "qwen3-32b": 4096
 }

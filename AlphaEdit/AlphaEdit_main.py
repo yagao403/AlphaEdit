@@ -29,21 +29,23 @@ def apply_AlphaEdit_to_model(
     P = None,
 ) -> Dict[str, Tuple[torch.Tensor]]:
     """
-    Executes the MEMIT update algorithm for the specified update at the specified layer
-    Invariant: model at beginning of function == model at end of function
+    Executes the AlphaEdit update algorithm for the specified update at the specified layer.
+    Supports multi-GPU models loaded with device_map="auto".
     """
 
     # Update target and print info
     requests = deepcopy(requests)
     for i, request in enumerate(requests):
         if request["target_new"]["str"][0] != " ":
-            # Space required for correct tokenization
             requests[i]["target_new"]["str"] = " " + request["target_new"]["str"]
     for request in requests[:10]:
         print(
-            f"MEMIT request sample: "
+            f"AlphaEdit request sample: "
             f"[{request['prompt'].format(request['subject'])}] -> [{request['target_new']['str']}]"
         )
+
+    # Determine a device for heavy linear algebra (linalg.solve, matmuls)
+    compute_device = torch.device("cuda:0")
 
     # Retrieve weights that user desires to change
     weights = {
@@ -58,7 +60,6 @@ def apply_AlphaEdit_to_model(
     z_list = []
 
     for request in requests:
-        # Retrieve k/v pair if already stored in cache
         cache_fname = (
             Path(
                 str(cache_template).format(
@@ -70,17 +71,16 @@ def apply_AlphaEdit_to_model(
         )
         data_loaded = False
         if (
-            cache_fname is not None  # Require cache template
-            and cache_fname.exists()  # Cache file must exist
+            cache_fname is not None
+            and cache_fname.exists()
         ):
             try:
                 data = np.load(cache_fname)
-                z_list.append(torch.from_numpy(data["v_star"]).to("cuda"))
+                z_list.append(torch.from_numpy(data["v_star"]).to(compute_device))
                 data_loaded = True
             except Exception as e:
                 print(f"Error reading cache file due to {e}. Recomputing...")
 
-        # Compute k/v pair if not loaded from cache
         if not data_loaded:
             cur_z = compute_z(
                 model,
@@ -91,7 +91,7 @@ def apply_AlphaEdit_to_model(
                 context_templates,
             )
 
-            z_list.append(cur_z)
+            z_list.append(cur_z.to(compute_device))
 
             if cache_fname is not None:
                 cache_fname.parent.mkdir(exist_ok=True, parents=True)
@@ -121,31 +121,45 @@ def apply_AlphaEdit_to_model(
             module_template=hparams.layer_module_tmp,
             fact_token_strategy=hparams.fact_token,
         )[1].T
+
+        # Move to common compute device for arithmetic
+        cur_zs = cur_zs.to(compute_device)
+        zs = zs.to(compute_device)
         targets = zs - cur_zs
         print("z error", torch.linalg.norm(targets, dim=0).mean())
 
+        # Move layer_ks to compute device and cast to float32 for numerical stability
+        layer_ks = layer_ks.float().to(compute_device)
+
         repeat_factor = (layer_ks.size(1) // targets.size(1))
         targets = targets.repeat_interleave(repeat_factor, dim=1)
-        resid = targets / (len(hparams.layers) - i)  # Distribute residual across layers
-        upd_matrix = torch.linalg.solve(
-                P[i,:,:].cuda() @ (layer_ks @ layer_ks.T + cache_c[i,:,:].cuda()) + hparams.L2*torch.eye(layer_ks.shape[0], dtype=torch.float,device="cuda"), P[i,:,:].cuda() @ layer_ks @ resid.T
+        resid = targets.float() / (len(hparams.layers) - i)
+
+        P_i = P[i,:,:].float().to(compute_device)
+        cache_c_i = cache_c[i,:,:].float().to(compute_device)
+        lhs = P_i @ (layer_ks @ layer_ks.T + cache_c_i) + hparams.L2 * torch.eye(
+            layer_ks.shape[0], dtype=torch.float, device=compute_device
         )
-        # Adjust update matrix shape
+        rhs = P_i @ layer_ks @ resid.T
+        upd_matrix = torch.linalg.solve(lhs, rhs)
+
+        # Adjust update matrix shape and move to weight's device/dtype
         weight_name = f"{hparams.rewrite_module_tmp.format(layer)}.weight"
         upd_matrix = upd_matrix_match_shape(upd_matrix, weights[weight_name].shape)
-        print("orig norm", torch.linalg.norm(weights[weight_name]))
-        print("upd norm", torch.linalg.norm(upd_matrix))
+        upd_matrix = upd_matrix.to(weights[weight_name].dtype).to(weights[weight_name].device)
+
+        print("orig norm", torch.linalg.norm(weights[weight_name].float()))
+        print("upd norm", torch.linalg.norm(upd_matrix.float()))
         with torch.no_grad():
             weights[weight_name][...] = weights[weight_name] + upd_matrix
-        # Clear GPU memory
-        #del U,S,cov
-        for x in [layer_ks, cur_zs, targets, upd_matrix]:
-            x.cpu()
-            del x
+
+        del layer_ks, cur_zs, targets, upd_matrix, P_i, cache_c_i, lhs, rhs
         torch.cuda.empty_cache()
+
     for i, layer in enumerate(hparams.layers):
         layer_ks = compute_ks(model, tok, requests, hparams, layer, context_templates).T
-        cache_c[i,:,:] += layer_ks.cpu() @ layer_ks.cpu().T
+        layer_ks_cpu = layer_ks.cpu().float()
+        cache_c[i,:,:] += layer_ks_cpu @ layer_ks_cpu.T
 
     print(f"Deltas successfully computed for {list(weights.keys())}")
     return model, cache_c
@@ -184,8 +198,9 @@ def get_cov(
         )
         COV_CACHE[key] = stat.mom2.moment().float().to("cpu")
 
+    device = torch.device("cuda:0")
     return (
-        torch.inverse(COV_CACHE[key].to("cuda")) if inv else COV_CACHE[key].to("cuda")
+        torch.inverse(COV_CACHE[key].to(device)) if inv else COV_CACHE[key].to(device)
     )
 
 

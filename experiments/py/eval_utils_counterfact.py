@@ -121,6 +121,16 @@ def compute_rewrite_quality_counterfact(
     return ret
 
 
+def _model_adds_bos(model, tok):
+    """Dynamically check if the tokenizer actually prepends a BOS token."""
+    test_ids = tok("test")["input_ids"]
+    return (
+        tok.bos_token_id is not None
+        and len(test_ids) > 0
+        and test_ids[0] == tok.bos_token_id
+    )
+
+
 def test_batch_prediction(
     model,
     tok,
@@ -132,6 +142,8 @@ def test_batch_prediction(
     """
     which_correct: Which target to consider correct. Either 0 for "new" or 1 for "true".
     """
+    input_device = next(model.parameters()).device
+    has_bos = _model_adds_bos(model, tok)
 
     prefix_lens = [len(n) for n in tok(prefixes)["input_ids"]]
     prompt_tok = tok(
@@ -142,20 +154,20 @@ def test_batch_prediction(
         ],
         padding=True,
         return_tensors="pt",
-    ).to("cuda")
+    ).to(input_device)
 
     a_tok, b_tok = (tok(f" {n}")["input_ids"] for n in [target_new, target_true])
 
-    if 'llama' in model.config._name_or_path.lower():
+    if has_bos:
         a_tok = a_tok[1:]
         b_tok = b_tok[1:]
-        prefix_lens = [lengths -1 for lengths in prefix_lens]
+        prefix_lens = [lengths - 1 for lengths in prefix_lens]
 
     choice_a_len, choice_b_len = (len(n) for n in [a_tok, b_tok])
     with torch.no_grad():
         logits = model(**prompt_tok).logits
 
-    if 'llama' in model.config._name_or_path.lower():
+    if has_bos:
         logits = logits[:, 1:, :]
 
     probs = np.zeros((logits.size(0),), dtype=np.float32)
@@ -164,7 +176,6 @@ def test_batch_prediction(
     for i in range(logits.size(0)):
         cur_len = choice_a_len if i % 2 == 0 else choice_b_len
 
-        # Compute suffix probabilities
         for j in range(cur_len):
             cur_tok = (a_tok if i % 2 == 0 else b_tok)[j]
             probs[i] += -torch.nn.functional.log_softmax(
@@ -172,7 +183,6 @@ def test_batch_prediction(
             )[cur_tok].item()
         probs[i] /= cur_len
 
-        # Compute accuracy on new targets
         if (which_correct[i // 2] == 0 and i % 2 == 0) or (
             which_correct[i // 2] == 1 and i % 2 == 1
         ):

@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import json
 import shutil
 from itertools import islice
@@ -20,6 +19,7 @@ from dsets import (
     MQUAKEDataset,
     get_tfidf_vectorizer,
     KnownsDataset,
+    MQUAKE_T_Dataset,
 )
 from experiments.py.eval_utils_counterfact import compute_rewrite_quality_counterfact
 from experiments.py.eval_utils_zsre import compute_rewrite_quality_zsre
@@ -54,6 +54,7 @@ DS_DICT = {
     "cf": (CounterFactDataset, compute_rewrite_quality_counterfact),
     "zsre": (MENDQADataset, compute_rewrite_quality_zsre),
     "mquake": (MQUAKEDataset, compute_rewrite_quality_mquake),
+    "mquake_t": (MQUAKE_T_Dataset, None),
 }
 
 
@@ -116,17 +117,37 @@ def main(
     # Instantiate vanilla model
     if type(model_name) is str:
         print("Instantiating model")
-        model = AutoModelForCausalLM.from_pretrained(model_name).cuda()
+        torch_dtype_map = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }
+        model_dtype = torch_dtype_map.get(
+            getattr(args, "torch_dtype", "float32"), torch.float32
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            device_map="auto",
+            torch_dtype=model_dtype,
+        )
         tok = AutoTokenizer.from_pretrained(model_name)
-        tok.pad_token = tok.eos_token
+        if tok.pad_token is None:
+            tok.pad_token = tok.eos_token
+        if hasattr(model, "hf_device_map"):
+            print(f"Model distributed across devices: {set(model.hf_device_map.values())}")
     else:
         model, tok = model_name
         model_name = model.config._name_or_path
 
     # Load data
-    print("Loading dataset, attribute snippets, tf-idf data")
-    snips = AttributeSnippets(DATA_DIR) if not skip_generation_tests else None
-    vec = get_tfidf_vectorizer(DATA_DIR) if not skip_generation_tests else None
+    save_model_path = getattr(args, "save_model", None)
+    if save_model_path:
+        print("--save_model is set; skipping evaluation data download")
+        snips, vec = None, None
+    else:
+        print("Loading dataset, attribute snippets, tf-idf data")
+        snips = AttributeSnippets(DATA_DIR) if not skip_generation_tests else None
+        vec = get_tfidf_vectorizer(DATA_DIR) if not skip_generation_tests else None
 
     if num_edits > 1:
         assert ds_name != "cf", f"{ds_name} does not support multiple edits"
@@ -193,23 +214,22 @@ def main(
                     )
                     print(f"Cached k/v pair at {cache_fname}")
     if any(alg in alg_name for alg in ["AlphaEdit", "MEMIT_seq", "MEMIT_prune", "NSE"]):
-        # Iterate through dataset
         W_out = nethook.get_parameter(model, f"{hparams.rewrite_module_tmp.format(hparams.layers[-1])}.weight")
+        # GPT-2 uses Conv1D with (in_features, out_features); standard nn.Linear uses (out_features, in_features)
         if hparams.model_name == "gpt2-xl":
-            cache_c = torch.zeros((len(hparams.layers), W_out.shape[0], W_out.shape[0]), device="cpu")
-            if alg_name == "AlphaEdit":
-                P = torch.zeros((len(hparams.layers), W_out.shape[0], W_out.shape[0]), device="cpu")
-        elif hparams.model_name in ["EleutherAI_gpt-j-6B","Llama3-8B","phi-1.5"]:
-            cache_c = torch.zeros((len(hparams.layers), W_out.shape[1], W_out.shape[1]), device="cpu")
-            if alg_name == "AlphaEdit":
-                P = torch.zeros((len(hparams.layers), W_out.shape[1], W_out.shape[1]), device="cpu")
+            key_dim = W_out.shape[0]
+        else:
+            key_dim = W_out.shape[1]
+        cache_c = torch.zeros((len(hparams.layers), key_dim, key_dim), device="cpu")
+        if alg_name == "AlphaEdit":
+            P = torch.zeros((len(hparams.layers), key_dim, key_dim), device="cpu")
         del W_out
     # if alg_name == "AlphaEdit":
     #     for i, layer in enumerate(hparams.layers):
     #         P[i,:,:] = get_project(model,tok,layer,hparams)
     #     torch.save(P, "null_space_project.pt")
     if alg_name == "AlphaEdit":
-        projection_file = Path("/scratch/project_462000812/yagao/baselines/AlphaEdit/null_space_project.pt")
+        projection_file = Path(f"/scratch/project_462000919/yagao/code_repo/AlphaEdit/AlphaEdit/precomputed/{model_name.split('/')[-1]}/null_space_project.pt")
         if projection_file.exists():
             print(f"Loading pre-computed projection matrix from {projection_file}")
             P = torch.load(projection_file)
@@ -251,7 +271,7 @@ def main(
         # Compute weight changes + record weights that changed
         case_ids = [record["case_id"] for record in record_chunks]
         args_conserve_memory = (
-            dict(return_orig_weights_device=("cpu" if conserve_memory else "cuda"))
+            dict(return_orig_weights_device=("cpu" if conserve_memory else next(model.parameters()).device))
             if conserve_memory
             else dict()
         )
@@ -335,16 +355,14 @@ def main(
                 with torch.no_grad():
                     for k, v in weights_copy.items():
                         current_weight = nethook.get_parameter(model, k)
-                        upd_matrix[k] = current_weight - v.to("cuda")
-                        # Calculate max singular value of the original weight
+                        upd_matrix[k] = current_weight - v.to(current_weight.device)
                         _, S_orig, _ = torch.svd(v)
                         max_sigma = S_orig.max().item()
 
-                        # Adjust the upd_matrix singular values
                         U_upd, S_upd, V_upd = torch.svd(upd_matrix[k])
                         adjusted_S = torch.where(
                             S_upd > max_sigma,
-                            torch.log(S_upd) - torch.log(torch.tensor(max_sigma, device='cuda')) + max_sigma,
+                            torch.log(S_upd) - torch.log(torch.tensor(max_sigma, device=S_upd.device)) + max_sigma,
                             S_upd
                         )
                         upd_matrix[k] = torch.matmul(U_upd, torch.matmul(torch.diag(adjusted_S), V_upd.t()))
@@ -393,16 +411,42 @@ def main(
             output_filename = out_file.replace('.json', '_glue.json')
             with open(output_filename, "w") as f:
                 json.dump(glue_results, f, indent=4)
-    # hs = get_module_input_output_at_words(
-    #         edited_model,
-    #         tok,
-    #         hparams.layers[-1],
-    #         context_templates=[request["template"] for request in eval_ds],
-    #         words=[request["subject"] for request in eval_ds],
-    #         module_template=hparams.layer_module_tmp,
-    #         fact_token_strategy=hparams.fact_token,
-    #     )[1].T
-    # torch.save(hs, "post_edit_hs_memit.pt")
+    if getattr(args, "save_model", None):
+        save_path = Path(args.save_model)
+        save_path.mkdir(parents=True, exist_ok=True)
+        print(f"Saving edited model to {save_path} ...")
+        model.save_pretrained(
+            save_path,
+            safe_serialization=True,
+            max_shard_size="5GB",
+        )
+        # tok.save_pretrained(save_path)
+        # # Copy generation_config.json from the original model if it exists
+        # orig_cache = Path(os.environ.get("HF_HOME", "")) / "hub"
+        # if orig_cache.exists():
+        #     for gc in orig_cache.rglob("generation_config.json"):
+        #         if model_name.replace("/", "--") in str(gc) or model_name.split("/")[-1] in str(gc):
+        #             shutil.copy2(gc, save_path / "generation_config.json")
+        #             print(f"Copied generation_config.json from {gc}")
+        #             break
+        certificate = {
+        "model_id": model_name,
+        "tokenizer_id": model_name,}
+        with open(save_path / "creation_certificate.json", 'w', encoding='utf-8') as f:
+            json.dump(certificate, f, ensure_ascii=False, indent=4)
+        edit_info = {
+            "alg_name": alg_name,
+            "model_name": model_name,
+            "num_edits_applied": cnt * num_edits,
+            "hparams": str(hparams),
+        }
+        with open(save_path / "edit_info.json", "w") as f:
+            json.dump(edit_info, f, indent=2)
+        print(f"Edited model saved to {save_path}")
+        saved_files = sorted(f.name for f in save_path.iterdir())
+        print(f"Saved files: {saved_files}")
+        return
+
     start = time()
     gen_test_vars = [snips, vec]
     for record in ds:
@@ -424,17 +468,11 @@ def main(
                     gen_test_vars
                     if record["case_id"] % generation_test_interval == 0
                     else [None, None]
-                ),  # Only test generation every generation_test_interval cases
+                ),
             ),
         }
-        # Dump metrics in .json
         with open(out_file, "w") as f:
             json.dump(metrics, f, indent=1)
-
-        # Restore original weights
-        # with torch.no_grad():
-        #     for k, v in weights_copy.items():
-        #         nethook.get_parameter(model, k)[...] = v.to("cuda")
 
         print("Evaluation took", time() - start)
 def get_project(model, tok, layer, hparams):
@@ -501,9 +539,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--ds_name",
-        choices=["mcf", "cf", "zsre", "mquake"],
+        choices=["mcf", "cf", "zsre", "mquake", "mquake_t"],
         default="mcf",
-        help="Dataset to perform evaluations on. Either CounterFact (cf), MultiCounterFact (mcf), or zsRE (zsre).",
+        help="Dataset to perform evaluations on. Either CounterFact (cf), MultiCounterFact (mcf), zsRE (zsre), or custom (mquake_t).",
     )
     parser.add_argument(
         "--continue_from_run",
@@ -554,6 +592,20 @@ if __name__ == "__main__":
         type=int,
         default=0,
         help="If we want to do sequential editing or not",
+    )
+    parser.add_argument(
+        "--torch_dtype",
+        type=str,
+        default="float32",
+        choices=["float16", "bfloat16", "float32"],
+        help="Model loading dtype (bfloat16 recommended for large models)",
+    )
+    parser.add_argument(
+        "--save_model",
+        type=str,
+        default=None,
+        help="Save the edited model to this path instead of running evaluation. "
+        "The model, tokenizer, and edit metadata will be saved.",
     )
     parser.set_defaults(skip_generation_tests=False, conserve_memory=False)
     args = parser.parse_args()

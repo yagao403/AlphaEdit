@@ -151,7 +151,15 @@ def generate_fast(
         unicodedata.normalize("NFKD", x)
         .replace("\n\n", " ")
         .replace("<|endoftext|>", "")
+        .replace("<|im_end|>", "")
+        .replace("<|im_start|>", "")
+        .replace("<|end|>", "")
         for x in txt
     ]
+    # Generic cleanup: remove tokenizer-specific EOS/BOS if they leaked into text
+    if tok.eos_token and tok.eos_token not in ("<|endoftext|>", "<|im_end|>", "<|end|>"):
+        txt = [t.replace(tok.eos_token, "") for t in txt]
+    if tok.bos_token and tok.bos_token not in ("<|endoftext|>", "<|im_start|>"):
+        txt = [t.replace(tok.bos_token, "") for t in txt]
 
     return txt

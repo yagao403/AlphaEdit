@@ -15,6 +15,16 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from dsets import AttributeSnippets
 
 
+def _model_adds_bos(model, tok):
+    """Dynamically check if the tokenizer actually prepends a BOS token."""
+    test_ids = tok("test")["input_ids"]
+    return (
+        tok.bos_token_id is not None
+        and len(test_ids) > 0
+        and test_ids[0] == tok.bos_token_id
+    )
+
+
 def compute_rewrite_quality_zsre(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
@@ -35,6 +45,8 @@ def compute_rewrite_quality_zsre(
     :return: Dictionary containing rewriting metrics
     """
 
+    has_bos = _model_adds_bos(model, tok)
+
     # First, unpack rewrite evaluation record.
     subject, target_new, target_true = (
         record["requested_rewrite"][x] for x in ["subject", "target_new", "target_true"]
@@ -50,11 +62,11 @@ def compute_rewrite_quality_zsre(
     ]
     # Flatten all the evaluated prefixes into one list.
     target_tok = tok(" " + target_new["str"])["input_ids"]
-    if 'llama' in model.config._name_or_path.lower():
+    if has_bos:
         target_tok = target_tok[1:]
     inp_prompts_og = list(chain(*prob_prompts))
     inp_prompts = [
-        el + tok.decode(target_tok[:i]) if 'llama' not in model.config._name_or_path.lower() or i ==0 else el + ' ' + tok.decode(target_tok[:i])
+        el + tok.decode(target_tok[:i]) if not has_bos or i == 0 else el + ' ' + tok.decode(target_tok[:i])
         for el in inp_prompts_og
         for i in range(len(target_tok))
     ]
@@ -100,24 +112,24 @@ def compute_rewrite_quality_zsre(
 
 
 def test_batch_prediction_acc(model, tok, prompts: typing.List[str], target):
+    input_device = next(model.parameters()).device
+    has_bos = _model_adds_bos(model, tok)
+
     prompt_tok = tok(
         prompts,
         padding=True,
         return_tensors="pt",
-    ).to("cuda")
+    ).to(input_device)
 
     with torch.no_grad():
         logits = model(**prompt_tok).logits
         last_non_masked = prompt_tok["attention_mask"].sum(1) - 1
-        to_gather = last_non_masked.unsqueeze(1).repeat(1, logits.size(-1)).unsqueeze(1)
+        to_gather = last_non_masked.unsqueeze(1).repeat(1, logits.size(-1)).unsqueeze(1).to(logits.device)
         gathered = torch.gather(logits, 1, to_gather).squeeze(1)
         ans = torch.argmax(gathered, dim=1)
 
-        correct_id = tok(target, padding=True, return_tensors="pt").to("cuda")[
-            "input_ids"
-        ]
-        # Temporary hack to deal with foreign characters.
-        if 'llama' in model.config._name_or_path.lower():
+        correct_id = tok(target, padding=True, return_tensors="pt")["input_ids"].to(logits.device)
+        if has_bos:
             correct_id = correct_id[:, 1].squeeze()
         else:
             correct_id = correct_id[:, 0].squeeze()
