@@ -4,3 +4,4 @@ from .knowns import KnownsDataset
 from .tfidf_stats import get_tfidf_vectorizer
 from .zsre import MENDQADataset
 from .mquake import MQUAKEDataset
+from .mquake_t import MQUAKE_T_Dataset
