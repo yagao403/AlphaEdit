@@ -19,6 +19,23 @@ from .AlphaEdit_hparams import AlphaEditHyperParams
 CONTEXT_TEMPLATES_CACHE = None
 COV_CACHE = {}
 
+
+def wrap_prompt_with_chat_template(tok, prompt_template: str) -> str:
+    """
+    Wraps a prompt template (still containing {} for subject substitution)
+    with the tokenizer's chat template and appends empty thinking tags
+    for non-thinking mode.
+    """
+    placeholder = "ALPHAEDIT_SUBJECT_PLACEHOLDER"
+    filled = prompt_template.replace("{}", placeholder)
+    messages = [{"role": "user", "content": filled}]
+    templated = tok.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    result = templated.replace(placeholder, "{}")
+    result += "<think>\n\n</think>\n\n"
+    return result
+
 def apply_AlphaEdit_to_model(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
@@ -27,6 +44,7 @@ def apply_AlphaEdit_to_model(
     cache_template: Optional[str] = None,
     cache_c = None,
     P = None,
+    use_chat_template: bool = False,
 ) -> Dict[str, Tuple[torch.Tensor]]:
     """
     Executes the AlphaEdit update algorithm for the specified update at the specified layer.
@@ -35,9 +53,17 @@ def apply_AlphaEdit_to_model(
 
     # Update target and print info
     requests = deepcopy(requests)
-    for i, request in enumerate(requests):
-        if request["target_new"]["str"][0] != " ":
-            requests[i]["target_new"]["str"] = " " + request["target_new"]["str"]
+    if not use_chat_template:
+        for i, request in enumerate(requests):
+            if request["target_new"]["str"][0] != " ":
+                requests[i]["target_new"]["str"] = " " + request["target_new"]["str"]
+
+    if use_chat_template:
+        for i, request in enumerate(requests):
+            requests[i]["prompt"] = wrap_prompt_with_chat_template(
+                tok, request["prompt"]
+            )
+
     for request in requests[:10]:
         print(
             f"AlphaEdit request sample: "
@@ -55,9 +81,19 @@ def apply_AlphaEdit_to_model(
         for layer in hparams.layers
     }
     # Compute z for final layer
-    context_templates = get_context_templates(model, tok)
+    if use_chat_template:
+        context_templates = [["{}"]]
+    else:
+        context_templates = get_context_templates(model, tok)
     z_layer = hparams.layers[-1]
     z_list = []
+
+    if use_chat_template and cache_template is not None:
+        print(
+            "WARNING: use_chat_template is ON with caching enabled. "
+            "Cached v* values computed without chat template will be stale. "
+            "Consider clearing the cache or disabling --use_cache."
+        )
 
     for request in requests:
         cache_fname = (
@@ -89,6 +125,7 @@ def apply_AlphaEdit_to_model(
                 hparams,
                 z_layer,
                 context_templates,
+                use_chat_template=use_chat_template,
             )
 
             z_list.append(cur_z.to(compute_device))

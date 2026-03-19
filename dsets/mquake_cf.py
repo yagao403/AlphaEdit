@@ -6,15 +6,14 @@ from transformers import AutoTokenizer
 
 from util.globals import *
 
-REMOTE_URL = f"{REMOTE_ROOT_URL}/data/dsets/mquake_t_question_data.json"
 
 
-class MQUAKE_T_Dataset:
+class MQUAKE_CF_Dataset:
 
 
     def __init__(self, data_dir: str, tok: AutoTokenizer, size=None, *args, **kwargs):
         data_dir = Path(data_dir)
-        mquake_t_loc = data_dir / "mquake_t_question_data.json"
+        mquake_t_loc = data_dir / "mquake_cf_question_data.json"
         if not mquake_t_loc.exists():
             print(f"{mquake_t_loc} does not exist.")
             raise FileNotFoundError(f"{mquake_t_loc} does not exist.")

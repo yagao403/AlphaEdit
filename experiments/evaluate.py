@@ -19,7 +19,8 @@ from dsets import (
     MQUAKEDataset,
     get_tfidf_vectorizer,
     KnownsDataset,
-    MQUAKE_T_Dataset,
+    MQUAKE_STORY_Dataset,
+    MQUAKE_CF_Dataset,
 )
 from experiments.py.eval_utils_counterfact import compute_rewrite_quality_counterfact
 from experiments.py.eval_utils_zsre import compute_rewrite_quality_zsre
@@ -54,7 +55,8 @@ DS_DICT = {
     "cf": (CounterFactDataset, compute_rewrite_quality_counterfact),
     "zsre": (MENDQADataset, compute_rewrite_quality_zsre),
     "mquake": (MQUAKEDataset, compute_rewrite_quality_mquake),
-    "mquake_t": (MQUAKE_T_Dataset, None),
+    "mquake_story": (MQUAKE_STORY_Dataset, None),
+    "mquake_cf": (MQUAKE_CF_Dataset, None),
 }
 
 
@@ -278,6 +280,7 @@ def main(
         etc_args = dict(cache_template=cache_template) if any(alg in alg_name for alg in ["ROME", "MEMIT","AlphaEdit", "MEMIT_seq", "MEMIT_prune", "NSE"]) else dict()
         seq_args = dict(cache_c=cache_c) if any(alg in alg_name for alg in ["AlphaEdit", "MEMIT_seq", "NSE"]) else dict()
         nc_args = dict(P = P) if any(alg in alg_name for alg in ["AlphaEdit"]) else dict()
+        chat_args = dict(use_chat_template=args.use_chat_template) if alg_name == "AlphaEdit" else dict()
         # if cnt == 0 and args.downstream_eval_steps > 0:#do initial GLUE EVAL WITH ORIGINAL MODEL
         if cnt == 0 and args.downstream_eval_steps > 0 and False: #do initial GLUE EVAL WITH ORIGINAL MODEL; set to False to disable
             glue_results = {'edit_num': -1}
@@ -310,6 +313,7 @@ def main(
                 **etc_args,
                 **seq_args,
                 **nc_args,
+                **chat_args,
             )
         elif alg_name == "MEMIT_prune":
             if cnt == 0:
@@ -539,9 +543,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--ds_name",
-        choices=["mcf", "cf", "zsre", "mquake", "mquake_t"],
+        choices=["mcf", "cf", "zsre", "mquake", "mquake_story", "mquake_cf"],
         default="mcf",
-        help="Dataset to perform evaluations on. Either CounterFact (cf), MultiCounterFact (mcf), zsRE (zsre), or custom (mquake_t).",
+        help="Dataset to perform evaluations on. Either CounterFact (cf), MultiCounterFact (mcf), zsRE (zsre), or custom (mquake_story).",
     )
     parser.add_argument(
         "--continue_from_run",
@@ -607,7 +611,14 @@ if __name__ == "__main__":
         help="Save the edited model to this path instead of running evaluation. "
         "The model, tokenizer, and edit metadata will be saved.",
     )
-    parser.set_defaults(skip_generation_tests=False, conserve_memory=False)
+    parser.add_argument(
+        "--use_chat_template",
+        dest="use_chat_template",
+        action="store_true",
+        help="Wrap prompts with the tokenizer's chat template (non-thinking mode). "
+        "Use for instruction-tuned / chat models like Qwen3-32B.",
+    )
+    parser.set_defaults(skip_generation_tests=False, conserve_memory=False, use_chat_template=False)
     args = parser.parse_args()
 
     main(

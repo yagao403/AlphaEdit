@@ -17,6 +17,7 @@ def compute_z(
     hparams: AlphaEditHyperParams,
     layer: int,
     context_templates: List[str],
+    use_chat_template: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Computes the value (right) vector for the rank-1 update.
@@ -49,11 +50,16 @@ def compute_z(
         target_ids = target_ids[1:]
 
     # Compile list of rewriting and KL x/y pairs
-    rewriting_prompts, kl_prompts = [
+    rewriting_prompts = [
         context.format(request["prompt"]) + tok.decode(target_ids[:-1])
         for context_types in context_templates
         for context in context_types
-    ], ["{} is a"]
+    ]
+    if use_chat_template:
+        from .AlphaEdit_main import wrap_prompt_with_chat_template
+        kl_prompts = [wrap_prompt_with_chat_template(tok, "{} is a")]
+    else:
+        kl_prompts = ["{} is a"]
     all_prompts = rewriting_prompts + kl_prompts
 
     input_tok = tok(
